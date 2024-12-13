@@ -1212,12 +1212,6 @@ type objKeyLiveTarget struct {
 	target *unstructured.Unstructured
 }
 
-type objKeyRevisionTarget struct {
-	key      kube.ResourceKey
-	revision *unstructured.Unstructured
-	target   *unstructured.Unstructured
-}
-
 // NewApplicationDiffCommand returns a new instance of an `argocd app diff` command
 func NewApplicationDiffCommand(clientOpts *argocdclient.ClientOptions) *cobra.Command {
 	var (
@@ -1235,7 +1229,7 @@ func NewApplicationDiffCommand(clientOpts *argocdclient.ClientOptions) *cobra.Co
 		sourcePositions      []int64
 		sourceNames          []string
 		ignoreNormalizerOpts normalizers.IgnoreNormalizerOpts
-		compareDesire        bool
+		compareDesired       bool
 	)
 	shortDesc := "Perform a diff against the target and live state."
 	command := &cobra.Command{
@@ -1312,7 +1306,7 @@ func NewApplicationDiffCommand(clientOpts *argocdclient.ClientOptions) *cobra.Co
 				diffOption.res = res
 				diffOption.revisions = revisions
 				diffOption.sourcePositions = sourcePositions
-			} else if compareDesire {
+			} else if compareDesired {
 				q := application.ApplicationManifestQuery{
 					Name:         &appName,
 					Revision:     &revision,
@@ -1322,7 +1316,7 @@ func NewApplicationDiffCommand(clientOpts *argocdclient.ClientOptions) *cobra.Co
 				errors.CheckError(err)
 				diffOption.res = res
 				diffOption.revision = revision
-				diffOption.compareDesire = true
+				diffOption.compareDesired = compareDesired
 			} else if revision != "" {
 				q := application.ApplicationManifestQuery{
 					Name:         &appName,
@@ -1378,7 +1372,7 @@ func NewApplicationDiffCommand(clientOpts *argocdclient.ClientOptions) *cobra.Co
 	command.Flags().Int64SliceVar(&sourcePositions, "source-positions", []int64{}, "List of source positions. Default is empty array. Counting start at 1.")
 	command.Flags().StringArrayVar(&sourceNames, "source-names", []string{}, "List of source names. Default is an empty array.")
 	command.Flags().DurationVar(&ignoreNormalizerOpts.JQExecutionTimeout, "ignore-normalizer-jq-execution-timeout", normalizers.DefaultJQExecutionTimeout, "Set ignore normalizer JQ execution timeout")
-	command.Flags().BoolVar(&compareDesire, "compare-desired", false, "Compare revison with desired state instead of live state")
+	command.Flags().BoolVar(&compareDesired, "compare-desired", false, "Compare revison with desired state instead of live state")
 
 	return command
 }
@@ -1393,7 +1387,7 @@ type DifferenceOption struct {
 	serversideRes   *repoapiclient.ManifestResponse
 	revisions       []string
 	sourcePositions []int64
-	compareDesire   bool
+	compareDesired  bool
 }
 
 // findandPrintDiff ... Prints difference between application current state and state stored in git or locally, returns boolean as true if difference is found else returns false
@@ -1405,9 +1399,7 @@ func findandPrintDiff(ctx context.Context, app *argoappv1.Application, proj *arg
 	if diffOptions.local != "" {
 		localObjs := groupObjsByKey(getLocalObjects(ctx, app, proj, diffOptions.local, diffOptions.localRepoRoot, argoSettings.AppLabelKey, diffOptions.cluster.Info.ServerVersion, diffOptions.cluster.Info.APIVersions, argoSettings.KustomizeOptions, argoSettings.TrackingMethod), liveObjs, app.Spec.Destination.Namespace)
 		items = groupObjsForDiff(resources, localObjs, items, argoSettings, app.InstanceName(argoSettings.ControllerNamespace), app.Spec.Destination.Namespace)
-	} else if diffOptions.compareDesire && diffOptions.revision != "" {
-		// Redeclaring items object for comparison between target and desire
-		items := make([]objKeyRevisionTarget, 0)
+	} else if diffOptions.compareDesired && diffOptions.revision != "" {
 		var revisionObjs, desiredObjs []*unstructured.Unstructured
 
 		// Extract revision objects from manifests
@@ -1431,7 +1423,7 @@ func findandPrintDiff(ctx context.Context, app *argoappv1.Application, proj *arg
 		items = groupObjsForDiffRev(resources, groupedObjs, items, argoSettings, app.InstanceName(argoSettings.ControllerNamespace), app.Spec.Destination.Namespace)
 
 		for _, item := range items {
-			if item.revision != nil && hook.IsHook(item.revision) || item.target != nil && hook.IsHook(item.target) {
+			if item.target != nil && hook.IsHook(item.target) || item.live != nil && hook.IsHook(item.live) {
 				continue
 			}
 			overrides := make(map[string]argoappv1.ResourceOverride)
@@ -1450,15 +1442,15 @@ func findandPrintDiff(ctx context.Context, app *argoappv1.Application, proj *arg
 				WithLogger(logutils.NewLogrusLogger(logutils.NewWithCurrentConfig())).
 				Build()
 			errors.CheckError(err)
-			diffRes, err := argodiff.StateDiff(item.revision, item.target, diffConfig)
+			diffRes, err := argodiff.StateDiff(item.live, item.target, diffConfig)
 			errors.CheckError(err)
 
-			if diffRes.Modified || item.revision == nil || item.target == nil {
+			if diffRes.Modified || item.target == nil || item.live == nil {
 				fmt.Printf("\n===== %s/%s %s/%s ======\n", item.key.Group, item.key.Kind, item.key.Namespace, item.key.Name)
 				var revision *unstructured.Unstructured
 				var target *unstructured.Unstructured
-				revision = item.revision
-				target = item.target
+				revision = item.target
+				target = item.live
 				if !foundDiffs {
 					foundDiffs = true
 				}
@@ -1579,7 +1571,7 @@ func groupObjsForDiff(resources *application.ManagedResourcesResponse, objs map[
 }
 
 // Grouping logic for target and revision objects
-func groupObjsForDiffRev(resources *application.ManagedResourcesResponse, objs map[kube.ResourceKey]*unstructured.Unstructured, items []objKeyRevisionTarget, argoSettings *settings.Settings, appName, namespace string) []objKeyRevisionTarget {
+func groupObjsForDiffRev(resources *application.ManagedResourcesResponse, objs map[kube.ResourceKey]*unstructured.Unstructured, items []objKeyLiveTarget, argoSettings *settings.Settings, appName, namespace string) []objKeyLiveTarget {
 	resourceTracking := argo.NewResourceTracking()
 	for _, res := range resources.Items {
 		target := &unstructured.Unstructured{}
@@ -1599,7 +1591,7 @@ func groupObjsForDiffRev(resources *application.ManagedResourcesResponse, objs m
 				errors.CheckError(err)
 			}
 
-			items = append(items, objKeyRevisionTarget{key, local, target})
+			items = append(items, objKeyLiveTarget{key, target, local})
 			delete(objs, key)
 		}
 	}
@@ -1609,7 +1601,7 @@ func groupObjsForDiffRev(resources *application.ManagedResourcesResponse, objs m
 			delete(objs, key)
 			continue
 		}
-		items = append(items, objKeyRevisionTarget{key, local, nil})
+		items = append(items, objKeyLiveTarget{key, nil, local})
 	}
 	return items
 }
