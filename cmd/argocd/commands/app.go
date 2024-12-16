@@ -1286,6 +1286,7 @@ func NewApplicationDiffCommand(clientOpts *argocdclient.ClientOptions) *cobra.Co
 			argoSettings, err := settingsIf.Get(ctx, &settings.SettingsQuery{})
 			errors.CheckError(err)
 			diffOption := &DifferenceOption{}
+			diffOption.compareDesired = compareDesired
 			if app.Spec.HasMultipleSources() && len(revisions) > 0 && len(sourcePositions) > 0 {
 				numOfSources := int64(len(app.Spec.GetSources()))
 				for _, pos := range sourcePositions {
@@ -1306,17 +1307,6 @@ func NewApplicationDiffCommand(clientOpts *argocdclient.ClientOptions) *cobra.Co
 				diffOption.res = res
 				diffOption.revisions = revisions
 				diffOption.sourcePositions = sourcePositions
-			} else if compareDesired {
-				q := application.ApplicationManifestQuery{
-					Name:         &appName,
-					Revision:     &revision,
-					AppNamespace: &appNs,
-				}
-				res, err := appIf.GetManifests(ctx, &q)
-				errors.CheckError(err)
-				diffOption.res = res
-				diffOption.revision = revision
-				diffOption.compareDesired = compareDesired
 			} else if revision != "" {
 				q := application.ApplicationManifestQuery{
 					Name:         &appName,
